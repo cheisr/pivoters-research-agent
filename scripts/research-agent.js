@@ -51,7 +51,7 @@ const todaySlug = new Date().toISOString().split("T")[0]; // e.g. 2026-04-02
 async function callClaude(messages, tools) {
   const body = {
     model: "claude-sonnet-4-20250514",
-    max_tokens: 1000,
+    max_tokens: 4000,
     messages,
   };
   if (tools) body.tools = tools;
