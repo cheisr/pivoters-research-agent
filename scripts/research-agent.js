@@ -9,6 +9,45 @@ const today = new Date().toLocaleDateString("en-US", {
 });
 const todaySlug = new Date().toISOString().split("T")[0];
 
+function safeParseJSON(text) {
+  // Try direct parse first
+  try {
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start !== -1 && end !== -1) return JSON.parse(text.slice(start, end + 1));
+  } catch(e) {}
+
+  // If truncated, try to salvage what we have field by field
+  const result = {};
+  const summaryMatch = text.match(/"summary"\s*:\s*"([^"]+)"/);
+  if (summaryMatch) result.summary = summaryMatch[1];
+
+  const painPoints = [];
+  const ppRegex = /"finding"\s*:\s*"([^"]+)"[^}]*?"source"\s*:\s*"([^"]+)"/g;
+  let m;
+  while ((m = ppRegex.exec(text)) !== null && painPoints.length < 3) {
+    painPoints.push({ finding: m[1], source: m[2] });
+  }
+  if (painPoints.length) result.pain_points = painPoints;
+
+  const competitors = [];
+  const compRegex = /"name"\s*:\s*"([^"]+)"[^}]*?"update"\s*:\s*"([^"]+)"/g;
+  while ((m = compRegex.exec(text)) !== null && competitors.length < 3) {
+    competitors.push({ name: m[1], update: m[2] });
+  }
+  if (competitors.length) result.competitor_updates = competitors;
+
+  const implications = [];
+  const impRegex = /"action"\s*:\s*"([^"]+)"/g;
+  while ((m = impRegex.exec(text)) !== null && implications.length < 3) {
+    implications.push({ action: m[1] });
+  }
+  if (implications.length) result.implications = implications;
+
+  if (!result.summary && !painPoints.length) throw new Error("Could not parse any data from response");
+  return result;
+}
+
 async function research() {
   console.log("🔍 Researching…");
 
@@ -21,29 +60,16 @@ async function research() {
     },
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 1200,
+      max_tokens: 800,
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       messages: [{
         role: "user",
-        content: `Today is ${today}. You are a researcher for Pivoters.com — a job platform for workers aged 55+ in frontline roles (grocery, warehouse, retail, delivery). Many have no resume or LinkedIn.
+        content: `${today}. Research 55+ frontline worker job market (grocery/warehouse/retail). Search Reddit and news.
 
-Search Reddit, X/Twitter, and news for what is happening TODAY. Also check for any new competitors or updates from AARP Job Board, RetirementJobs, Workforce50, Seniors4Hire.
+JSON only, no other text:
+{"summary":"one sentence","pain_points":[{"finding":"one sentence","source":"one word source"}],"competitor_updates":[{"name":"one word","update":"one sentence","gap":"one sentence"}],"implications":[{"action":"one sentence"}]}
 
-Return ONLY this raw JSON, no markdown, no extra text:
-{
-  "summary": "2 sentences max",
-  "pain_points": [
-    {"finding": "1 sentence", "source": "where"}
-  ],
-  "competitor_updates": [
-    {"name": "...", "update": "1 sentence", "gap": "1 sentence"}
-  ],
-  "implications": [
-    {"action": "1 sentence what Pivoters should do or watch"}
-  ]
-}
-
-Strict limits: max 3 items per array, 1 sentence per field. Raw JSON only.`
+Rules: max 2 items per array, under 15 words per value, raw JSON only.`
       }],
     }),
   });
@@ -51,10 +77,8 @@ Strict limits: max 3 items per array, 1 sentence per field. Raw JSON only.`
   if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
   const data = await res.json();
   const text = data.content.filter(b => b.type === "text").map(b => b.text).join("\n");
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1) throw new Error("No JSON found: " + text.slice(0, 300));
-  return JSON.parse(text.slice(start, end + 1));
+  console.log("Raw response length:", text.length);
+  return safeParseJSON(text);
 }
 
 function card(content) {
@@ -78,7 +102,7 @@ function generateHTML(data) {
     .title{font-size:22px;font-weight:700;margin-bottom:4px}
     .date{font-size:12px;opacity:0.65;margin-bottom:14px}
     .summary{background:rgba(255,255,255,0.13);border-radius:10px;padding:14px 16px;font-size:14px;line-height:1.7}
-    h2{font-size:14px;font-weight:700;color:#111827;margin:0 0 10px;display:flex;align-items:center;gap:6px}
+    h2{font-size:14px;font-weight:700;color:#111827;margin:0 0 10px}
     .section{margin-bottom:28px}
     .finding{font-weight:500;color:#111827;margin-bottom:3px}
     .meta{font-size:12px;color:#6B7280}
@@ -93,32 +117,14 @@ function generateHTML(data) {
     <div class="label">Pivoters.com · Daily Intelligence</div>
     <div class="title">Research Brief</div>
     <div class="date">${today}</div>
-    <div class="summary">${data.summary || ""}</div>
+    <div class="summary">${data.summary || "Research complete."}</div>
   </div>
 
-  <div class="section">
-    <h2>⚡ Pain Points</h2>
-    ${(data.pain_points || []).map(p => card(`
-      <div class="finding">${p.finding}</div>
-      <div class="meta">${p.source || ""}</div>
-    `)).join("")}
-  </div>
+  ${(data.pain_points||[]).length ? `<div class="section"><h2>⚡ Pain Points</h2>${(data.pain_points||[]).map(p=>card(`<div class="finding">${p.finding}</div><div class="meta">${p.source||""}</div>`)).join("")}</div>` : ""}
 
-  <div class="section">
-    <h2>🔍 Competitor Updates</h2>
-    ${(data.competitor_updates || []).map(c => card(`
-      <div class="finding">${c.name}</div>
-      <div class="meta">${c.update || ""}</div>
-      ${c.gap ? `<div class="gap">Gap: ${c.gap}</div>` : ""}
-    `)).join("")}
-  </div>
+  ${(data.competitor_updates||[]).length ? `<div class="section"><h2>🔍 Competitor Updates</h2>${(data.competitor_updates||[]).map(c=>card(`<div class="finding">${c.name}</div><div class="meta">${c.update||""}</div>${c.gap?`<div class="gap">Gap: ${c.gap}</div>`:""}`)).join("")}</div>` : ""}
 
-  <div class="section">
-    <h2>🚀 Implications for Pivoters</h2>
-    ${(data.implications || []).map((imp, i) => card(`
-      <div class="action">${i + 1}. ${imp.action}</div>
-    `)).join("")}
-  </div>
+  ${(data.implications||[]).length ? `<div class="section"><h2>🚀 Implications for Pivoters</h2>${(data.implications||[]).map((imp,i)=>card(`<div class="action">${i+1}. ${imp.action}</div>`)).join("")}</div>` : ""}
 
   <div class="footer">Pivoters Research Agent · ${today}</div>
 </div>
