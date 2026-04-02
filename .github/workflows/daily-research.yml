@@ -1,0 +1,22 @@
+name: Daily Research Digest
+
+on:
+  schedule:
+    - cron: "0 6 * * *"   # 6:00 AM UTC = 9:00 AM Israel time
+  workflow_dispatch:       # lets you run it manually from GitHub UI
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run research agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GOOGLE_CHAT_WEBHOOK: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
+        run: node scripts/research-agent.js
