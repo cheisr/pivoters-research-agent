@@ -9,76 +9,93 @@ const today = new Date().toLocaleDateString("en-US", {
 });
 const todaySlug = new Date().toISOString().split("T")[0];
 
-function safeParseJSON(text) {
-  // Try direct parse first
-  try {
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function callClaude(prompt, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    const res = await fetch(ANTHROPIC_API, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1500,
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+
+    if (res.status === 429) {
+      console.log(`Rate limited, waiting 60s… (attempt ${i + 1}/${retries})`);
+      await sleep(60000);
+      continue;
+    }
+
+    if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+
+    const data = await res.json();
+    const text = data.content.filter(b => b.type === "text").map(b => b.text).join("\n");
     const start = text.indexOf("{");
     const end = text.lastIndexOf("}");
-    if (start !== -1 && end !== -1) return JSON.parse(text.slice(start, end + 1));
-  } catch(e) {}
-
-  // If truncated, try to salvage what we have field by field
-  const result = {};
-  const summaryMatch = text.match(/"summary"\s*:\s*"([^"]+)"/);
-  if (summaryMatch) result.summary = summaryMatch[1];
-
-  const painPoints = [];
-  const ppRegex = /"finding"\s*:\s*"([^"]+)"[^}]*?"source"\s*:\s*"([^"]+)"/g;
-  let m;
-  while ((m = ppRegex.exec(text)) !== null && painPoints.length < 3) {
-    painPoints.push({ finding: m[1], source: m[2] });
+    if (start === -1 || end === -1) throw new Error("No JSON in response: " + text.slice(0, 300));
+    return JSON.parse(text.slice(start, end + 1));
   }
-  if (painPoints.length) result.pain_points = painPoints;
-
-  const competitors = [];
-  const compRegex = /"name"\s*:\s*"([^"]+)"[^}]*?"update"\s*:\s*"([^"]+)"/g;
-  while ((m = compRegex.exec(text)) !== null && competitors.length < 3) {
-    competitors.push({ name: m[1], update: m[2] });
-  }
-  if (competitors.length) result.competitor_updates = competitors;
-
-  const implications = [];
-  const impRegex = /"action"\s*:\s*"([^"]+)"/g;
-  while ((m = impRegex.exec(text)) !== null && implications.length < 3) {
-    implications.push({ action: m[1] });
-  }
-  if (implications.length) result.implications = implications;
-
-  if (!result.summary && !painPoints.length) throw new Error("Could not parse any data from response");
-  return result;
+  throw new Error("Max retries hit");
 }
 
 async function research() {
-  console.log("🔍 Researching…");
+  console.log("🔍 Researching pain points…");
 
-  const res = await fetch(ANTHROPIC_API, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 800,
-      tools: [{ type: "web_search_20250305", name: "web_search" }],
-      messages: [{
-        role: "user",
-        content: `${today}. Research 55+ frontline worker job market (grocery/warehouse/retail). Search Reddit and news.
+  const part1 = await callClaude(`Today is ${today}.
 
-JSON only, no other text:
-{"summary":"one sentence","pain_points":[{"finding":"one sentence","source":"one word source"}],"competitor_updates":[{"name":"one word","update":"one sentence","gap":"one sentence"}],"implications":[{"action":"one sentence"}]}
+Search Reddit RIGHT NOW for posts from the last 7 days in r/ageover50, r/jobs, r/Unemployment, r/povertyfinance about people aged 55+ struggling to find work in grocery stores, warehouses, retail, delivery, or cleaning. Find REAL complaints and frustrations people are actually posting about.
 
-Rules: max 2 items per array, under 15 words per value, raw JSON only.`
-      }],
-    }),
-  });
+Also search X/Twitter for recent posts about "55+ job search", "older worker hiring", "age discrimination retail", "senior worker warehouse".
 
-  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
-  const data = await res.json();
-  const text = data.content.filter(b => b.type === "text").map(b => b.text).join("\n");
-  console.log("Raw response length:", text.length);
-  return safeParseJSON(text);
+Return ONLY this JSON, no other text:
+{
+  "summary": "One sentence describing the single most relevant thing happening right now for 55+ frontline job seekers",
+  "pain_points": [
+    {"finding": "Specific real complaint or trend from a real source", "source": "Reddit r/ageover50 or X/Twitter etc"}
+  ]
+}
+
+Max 3 pain_points. Each finding must be a SPECIFIC real signal, not a generic stat. Raw JSON only.`);
+
+  await sleep(5000);
+
+  console.log("🔍 Researching competitors…");
+
+  const part2 = await callClaude(`Today is ${today}.
+
+Search the web for any job platforms, apps, or websites that help workers aged 55+ or seniors find frontline jobs (grocery, retail, warehouse, delivery) WITHOUT needing a resume or LinkedIn. 
+
+Specifically check for recent news, product launches, or updates from: AARP Job Board, RetirementJobs.com, Workforce50.com, Seniors4Hire.org, MyPivot, Hire55, and any NEW platforms launched in 2025-2026.
+
+Also search "job app for seniors no resume", "55+ hiring platform 2026", "older worker job board new".
+
+Return ONLY this JSON, no other text:
+{
+  "competitor_updates": [
+    {"name": "Platform name", "update": "What is actually new or notable about them right now", "gap": "Specific weakness or complaint users have about them"}
+  ],
+  "implications": [
+    {"action": "Specific thing Pivoters should build, fix, or prioritize based on what you found"}
+  ]
+}
+
+Max 3 competitor_updates, max 2 implications. Must be based on real findings. Raw JSON only.`);
+
+  return {
+    date: today,
+    summary: part1.summary || "",
+    pain_points: part1.pain_points || [],
+    competitor_updates: part2.competitor_updates || [],
+    implications: part2.implications || [],
+  };
 }
 
 function card(content) {
@@ -91,7 +108,7 @@ function generateHTML(data) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Pivoters Brief — ${today}</title>
+  <title>Pivoters Brief — ${data.date}</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
@@ -105,9 +122,9 @@ function generateHTML(data) {
     h2{font-size:14px;font-weight:700;color:#111827;margin:0 0 10px}
     .section{margin-bottom:28px}
     .finding{font-weight:500;color:#111827;margin-bottom:3px}
-    .meta{font-size:12px;color:#6B7280}
-    .action{font-size:13px;padding:8px 12px;background:#F0FDF4;border-left:3px solid #16A34A;border-radius:4px}
-    .gap{font-size:12px;color:#6B7280;margin-top:4px;font-style:italic}
+    .meta{font-size:12px;color:#6B7280;margin-top:3px}
+    .action{font-size:13px;padding:10px 14px;background:#F0FDF4;border-left:3px solid #16A34A;border-radius:4px}
+    .gap{font-size:12px;color:#9061F9;margin-top:6px;font-style:italic}
     .footer{text-align:center;font-size:12px;color:#9CA3AF;margin-top:36px}
   </style>
 </head>
@@ -116,17 +133,38 @@ function generateHTML(data) {
   <div class="header">
     <div class="label">Pivoters.com · Daily Intelligence</div>
     <div class="title">Research Brief</div>
-    <div class="date">${today}</div>
-    <div class="summary">${data.summary || "Research complete."}</div>
+    <div class="date">${data.date}</div>
+    <div class="summary">${data.summary}</div>
   </div>
 
-  ${(data.pain_points||[]).length ? `<div class="section"><h2>⚡ Pain Points</h2>${(data.pain_points||[]).map(p=>card(`<div class="finding">${p.finding}</div><div class="meta">${p.source||""}</div>`)).join("")}</div>` : ""}
+  ${data.pain_points.length ? `
+  <div class="section">
+    <h2>⚡ Pain Points — What 55+ workers are saying right now</h2>
+    ${data.pain_points.map(p => card(`
+      <div class="finding">${p.finding}</div>
+      <div class="meta">📍 ${p.source}</div>
+    `)).join("")}
+  </div>` : ""}
 
-  ${(data.competitor_updates||[]).length ? `<div class="section"><h2>🔍 Competitor Updates</h2>${(data.competitor_updates||[]).map(c=>card(`<div class="finding">${c.name}</div><div class="meta">${c.update||""}</div>${c.gap?`<div class="gap">Gap: ${c.gap}</div>`:""}`)).join("")}</div>` : ""}
+  ${data.competitor_updates.length ? `
+  <div class="section">
+    <h2>🔍 Competitor Landscape</h2>
+    ${data.competitor_updates.map(c => card(`
+      <div class="finding">${c.name}</div>
+      <div class="meta">${c.update}</div>
+      ${c.gap ? `<div class="gap">⚠️ Gap: ${c.gap}</div>` : ""}
+    `)).join("")}
+  </div>` : ""}
 
-  ${(data.implications||[]).length ? `<div class="section"><h2>🚀 Implications for Pivoters</h2>${(data.implications||[]).map((imp,i)=>card(`<div class="action">${i+1}. ${imp.action}</div>`)).join("")}</div>` : ""}
+  ${data.implications.length ? `
+  <div class="section">
+    <h2>🚀 What Pivoters should do</h2>
+    ${data.implications.map((imp, i) => card(`
+      <div class="action">${i + 1}. ${imp.action}</div>
+    `)).join("")}
+  </div>` : ""}
 
-  <div class="footer">Pivoters Research Agent · ${today}</div>
+  <div class="footer">Pivoters Research Agent · ${data.date}</div>
 </div>
 </body>
 </html>`;
